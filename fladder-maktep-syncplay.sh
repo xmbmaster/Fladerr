@@ -14,7 +14,7 @@ DEBIAN_TEMPLATE="${DEBIAN_TEMPLATE:-debian-13-standard_13.1-2_amd64.tar.zst}"
 REPO="https://github.com/irican-f/Fladder-Maktep.git"
 BRANCH="maktep-syncplay"
 
-echo "== Download Debian template =="
+echo "== Download template =="
 pveam update
 pveam download "$TEMPLATE_STORAGE" "$DEBIAN_TEMPLATE" || true
 
@@ -33,7 +33,7 @@ pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$DEBIAN_TEMPLATE" \
 
 sleep 10
 
-echo "== Install and build Fladder Maktep SyncPlay =="
+echo "== Install Fladder Maktep SyncPlay =="
 
 pct exec "$CTID" -- bash -lc "
 set -e
@@ -46,47 +46,56 @@ cd /opt
 
 export TAR_OPTIONS=--no-same-owner
 
+# Install Flutter
 if [ ! -d /opt/flutter ]; then
   git clone https://github.com/flutter/flutter.git -b stable --depth 1 /opt/flutter
 fi
 
 export PATH=/opt/flutter/bin:\$PATH
-
 flutter config --enable-web || true
 flutter doctor || true
 
+# Clone repo
 rm -rf /opt/fladder-src
 git clone --branch $BRANCH --depth 1 $REPO /opt/fladder-src
 
 cd /opt/fladder-src
 
-echo '== Apply RepeatMode web build patch =='
+echo '== Apply FIX for RepeatMode conflict =='
+
 python3 - <<'PY'
 from pathlib import Path
 
-for p in Path('lib/models/playback').glob('*.dart'):
+for p in Path("lib/models/playback").glob("*.dart"):
     s = p.read_text()
 
-    s = s.replace(
-        \"import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart';\",
-        \"import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart' as jellyfin_enums;\"
-    )
+    # Fix duplicate imports by aliasing Jellyfin enums
+    if "jellyfin_open_api.enums.swagger.dart" in s:
+        s = s.replace(
+            "import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart';",
+            "import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart' as jellyfin_enums;"
+        )
 
+    # Replace ONLY raw RepeatMode usage
     s = s.replace(
-        'RepeatMode.repeatall',
-        'jellyfin_enums.RepeatMode.repeatall'
+        "repeatMode: RepeatMode.repeatall",
+        "repeatMode: jellyfin_enums.RepeatMode.repeatall"
     )
 
     p.write_text(s)
 PY
 
 flutter pub get
+
+echo '== Build Web =='
 flutter build web --release --no-wasm-dry-run
 
+# Deploy
 rm -rf /opt/fladder
 mkdir -p /opt/fladder
 cp -a build/web/* /opt/fladder/
 
+# Nginx config
 cat >/etc/nginx/sites-available/fladder <<'EOF'
 server {
     listen 80 default_server;
@@ -95,16 +104,8 @@ server {
     root /opt/fladder;
     index index.html;
 
-    server_name _;
-
     location / {
         try_files \$uri \$uri/ /index.html;
-    }
-
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|wasm|json)$ {
-        expires 7d;
-        add_header Cache-Control \"public, immutable\";
-        try_files \$uri =404;
     }
 }
 EOF
@@ -117,10 +118,10 @@ systemctl enable nginx
 systemctl restart nginx
 "
 
-IP="$(pct exec "$CTID" -- hostname -I | awk '{print $1}')"
+IP="\$(pct exec "$CTID" -- hostname -I | awk '{print \$1}')"
 
 echo
 echo "======================================"
 echo "Fladder Maktep SyncPlay Installed!"
-echo "Access: http://$IP"
+echo "Access: http://\$IP"
 echo "======================================"
