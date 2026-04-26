@@ -9,12 +9,12 @@ CPU="${CPU:-4}"
 BRIDGE="${BRIDGE:-vmbr0}"
 STORAGE="${STORAGE:-local-lvm}"
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
-DEBIAN_TEMPLATE="debian-13-standard_13.1-2_amd64.tar.zst"
+DEBIAN_TEMPLATE="${DEBIAN_TEMPLATE:-debian-13-standard_13.1-2_amd64.tar.zst}"
 
 REPO="https://github.com/irican-f/Fladder-Maktep.git"
 BRANCH="maktep-syncplay"
 
-echo "== Download template =="
+echo "== Download Debian template =="
 pveam update
 pveam download "$TEMPLATE_STORAGE" "$DEBIAN_TEMPLATE" || true
 
@@ -31,46 +31,62 @@ pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$DEBIAN_TEMPLATE" \
   --ostype debian \
   --start 1
 
-echo "== Wait for container =="
 sleep 10
 
-echo "== Install Fladder (Maktep SyncPlay) =="
+echo "== Install and build Fladder Maktep SyncPlay =="
 
 pct exec "$CTID" -- bash -lc "
 set -e
 
 apt update
-apt install -y git curl unzip xz-utils zip nginx ca-certificates tar
+apt install -y git curl unzip xz-utils zip nginx ca-certificates tar python3
 
 mkdir -p /opt
 cd /opt
 
-# Fix tar ownership issue
 export TAR_OPTIONS=--no-same-owner
 
-# Install Flutter
-if [ ! -d flutter ]; then
-  git clone https://github.com/flutter/flutter.git -b stable --depth 1
+if [ ! -d /opt/flutter ]; then
+  git clone https://github.com/flutter/flutter.git -b stable --depth 1 /opt/flutter
 fi
 
 export PATH=/opt/flutter/bin:\$PATH
+
 flutter config --enable-web || true
 flutter doctor || true
 
-# Clone Fladder fork
 rm -rf /opt/fladder-src
 git clone --branch $BRANCH --depth 1 $REPO /opt/fladder-src
 
 cd /opt/fladder-src
-flutter pub get
-flutter build web --release
 
-# Deploy
+echo '== Apply RepeatMode web build patch =='
+python3 - <<'PY'
+from pathlib import Path
+
+for p in Path('lib/models/playback').glob('*.dart'):
+    s = p.read_text()
+
+    s = s.replace(
+        \"import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart';\",
+        \"import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart' as jellyfin_enums;\"
+    )
+
+    s = s.replace(
+        'RepeatMode.repeatall',
+        'jellyfin_enums.RepeatMode.repeatall'
+    )
+
+    p.write_text(s)
+PY
+
+flutter pub get
+flutter build web --release --no-wasm-dry-run
+
 rm -rf /opt/fladder
 mkdir -p /opt/fladder
 cp -a build/web/* /opt/fladder/
 
-# Nginx config
 cat >/etc/nginx/sites-available/fladder <<'EOF'
 server {
     listen 80 default_server;
@@ -79,8 +95,16 @@ server {
     root /opt/fladder;
     index index.html;
 
+    server_name _;
+
     location / {
         try_files \$uri \$uri/ /index.html;
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|wasm|json)$ {
+        expires 7d;
+        add_header Cache-Control \"public, immutable\";
+        try_files \$uri =404;
     }
 }
 EOF
