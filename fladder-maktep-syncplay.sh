@@ -3,7 +3,7 @@ set -euo pipefail
 
 CTID="${CTID:-123}"
 HOSTNAME="fladder-maktep"
-DISK="${DISK:-16}"
+DISK="${DISK:-20}"
 RAM="${RAM:-4096}"
 CPU="${CPU:-4}"
 BRIDGE="${BRIDGE:-vmbr0}"
@@ -14,7 +14,7 @@ DEBIAN_TEMPLATE="debian-13-standard_13.1-2_amd64.tar.zst"
 REPO="https://github.com/irican-f/Fladder-Maktep.git"
 BRANCH="maktep-syncplay"
 
-echo "== Download Debian 13 template if missing =="
+echo "== Download template =="
 pveam update
 pveam download "$TEMPLATE_STORAGE" "$DEBIAN_TEMPLATE" || true
 
@@ -26,34 +26,38 @@ pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$DEBIAN_TEMPLATE" \
   --swap 1024 \
   --rootfs "$STORAGE:$DISK" \
   --net0 name=eth0,bridge="$BRIDGE",ip=dhcp \
-  --unprivileged 1 \
+  --unprivileged 0 \
   --features nesting=1 \
   --ostype debian \
   --start 1
 
-echo "== Wait for container network =="
-sleep 8
+echo "== Wait for container =="
+sleep 10
 
-echo "== Install Fladder Maktep SyncPlay build =="
+echo "== Install Fladder (Maktep SyncPlay) =="
+
 pct exec "$CTID" -- bash -lc "
 set -e
 
 apt update
-apt install -y \
-  git curl unzip xz-utils zip nginx ca-certificates \
-  clang cmake ninja-build pkg-config libgtk-3-dev
+apt install -y git curl unzip xz-utils zip nginx ca-certificates tar
 
 mkdir -p /opt
 cd /opt
 
+# Fix tar ownership issue
+export TAR_OPTIONS=--no-same-owner
+
+# Install Flutter
 if [ ! -d flutter ]; then
   git clone https://github.com/flutter/flutter.git -b stable --depth 1
 fi
 
 export PATH=/opt/flutter/bin:\$PATH
-flutter config --enable-web
+flutter config --enable-web || true
 flutter doctor || true
 
+# Clone Fladder fork
 rm -rf /opt/fladder-src
 git clone --branch $BRANCH --depth 1 $REPO /opt/fladder-src
 
@@ -61,10 +65,12 @@ cd /opt/fladder-src
 flutter pub get
 flutter build web --release
 
+# Deploy
 rm -rf /opt/fladder
 mkdir -p /opt/fladder
 cp -a build/web/* /opt/fladder/
 
+# Nginx config
 cat >/etc/nginx/sites-available/fladder <<'EOF'
 server {
     listen 80 default_server;
@@ -73,16 +79,8 @@ server {
     root /opt/fladder;
     index index.html;
 
-    server_name _;
-
     location / {
         try_files \$uri \$uri/ /index.html;
-    }
-
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|wasm|json)$ {
-        expires 7d;
-        add_header Cache-Control \"public, immutable\";
-        try_files \$uri =404;
     }
 }
 EOF
@@ -98,6 +96,7 @@ systemctl restart nginx
 IP="$(pct exec "$CTID" -- hostname -I | awk '{print $1}')"
 
 echo
-echo "Done."
-echo "Fladder Maktep SyncPlay:"
-echo "http://$IP"
+echo "======================================"
+echo "Fladder Maktep SyncPlay Installed!"
+echo "Access: http://$IP"
+echo "======================================"
