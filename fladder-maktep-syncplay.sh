@@ -9,7 +9,7 @@ CPU="${CPU:-4}"
 BRIDGE="${BRIDGE:-vmbr0}"
 STORAGE="${STORAGE:-local-lvm}"
 TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-local}"
-DEBIAN_TEMPLATE="debian-13-standard_13.0-1_amd64.tar.zst"
+DEBIAN_TEMPLATE="debian-13-standard_13.1-2_amd64.tar.zst"
 
 REPO="https://github.com/irican-f/Fladder-Maktep.git"
 BRANCH="maktep-syncplay"
