@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CTID="${CTID:-123}"
-HOSTNAME="fladder-maktep"
+HOSTNAME="fladder-maktep-sg"
 DISK="${DISK:-20}"
 RAM="${RAM:-4096}"
 CPU="${CPU:-4}"
@@ -13,10 +13,13 @@ DEBIAN_TEMPLATE="${DEBIAN_TEMPLATE:-debian-13-standard_13.1-2_amd64.tar.zst}"
 
 REPO="https://github.com/irican-f/Fladder-Maktep.git"
 BRANCH="maktep-syncplay"
+TZ="Asia/Singapore"
 
+echo "== Download Debian template =="
 pveam update
 pveam download "$TEMPLATE_STORAGE" "$DEBIAN_TEMPLATE" || true
 
+echo "== Create LXC $CTID =="
 pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$DEBIAN_TEMPLATE" \
   --hostname "$HOSTNAME" \
   --cores "$CPU" \
@@ -31,11 +34,14 @@ pct create "$CTID" "$TEMPLATE_STORAGE:vztmpl/$DEBIAN_TEMPLATE" \
 
 sleep 10
 
-pct exec "$CTID" -- env REPO="$REPO" BRANCH="$BRANCH" bash -s <<'LXC_SCRIPT'
+pct exec "$CTID" -- env REPO="$REPO" BRANCH="$BRANCH" TZ="$TZ" bash -s <<'LXC_SCRIPT'
 set -e
 
 apt update
-apt install -y git curl unzip xz-utils zip nginx ca-certificates tar python3
+apt install -y git curl unzip xz-utils zip nginx ca-certificates tar python3 tzdata
+
+ln -sf /usr/share/zoneinfo/$TZ /etc/localtime
+echo "$TZ" > /etc/timezone
 
 mkdir -p /opt
 cd /opt
@@ -56,25 +62,40 @@ git clone --branch "$BRANCH" --depth 1 "$REPO" /opt/fladder-src
 
 cd /opt/fladder-src
 
+echo "== Apply web build patch =="
 python3 <<'PY'
 from pathlib import Path
+import re
 
 for p in Path("lib/models/playback").glob("*.dart"):
     s = p.read_text()
 
     s = s.replace(
-        "import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart';",
-        "import 'package:fladder/jellyfin/jellyfin_open_api.enums.swagger.dart' as jellyfin_enums;"
+        "jellyfin_enums.RepeatMode.repeatall",
+        "RepeatMode.repeatAll"
+    )
+
+    s = re.sub(
+        r"import 'package:fladder/jellyfin/jellyfin_open_api\.enums\.swagger\.dart' as jellyfin_enums;\n?",
+        "",
+        s
+    )
+
+    s = re.sub(
+        r"import 'package:fladder/jellyfin/jellyfin_open_api\.enums\.swagger\.dart';\n?",
+        "",
+        s
     )
 
     s = s.replace(
         "repeatMode: RepeatMode.repeatall",
-        "repeatMode: jellyfin_enums.RepeatMode.repeatall"
+        "repeatMode: RepeatMode.repeatAll"
     )
 
     p.write_text(s)
 PY
 
+flutter clean
 flutter pub get
 flutter build web --release --no-wasm-dry-run
 
@@ -90,8 +111,16 @@ server {
     root /opt/fladder;
     index index.html;
 
+    server_name _;
+
     location / {
         try_files $uri $uri/ /index.html;
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|wasm|json)$ {
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
     }
 }
 NGINX
@@ -107,5 +136,8 @@ LXC_SCRIPT
 IP="$(pct exec "$CTID" -- hostname -I | awk '{print $1}')"
 
 echo
-echo "Fladder Maktep SyncPlay Installed!"
+echo "======================================"
+echo "Fladder Maktep SyncPlay SG Installed!"
+echo "Timezone: Asia/Singapore"
 echo "Access: http://$IP"
+echo "======================================"
